@@ -1,14 +1,73 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from typing import Any
+from fastapi import FastAPI
 import uvicorn
 import requests
 
+# Official x402 SDK Imports
+from x402.http import FacilitatorConfig, HTTPFacilitatorClient, PaymentOption
+from x402.http.middleware.fastapi import PaymentMiddlewareASGI
+from x402.http.types import RouteConfig
+from x402.mechanisms.evm.exact import ExactEvmServerScheme
+from x402.server import x402ResourceServer
+
 app = FastAPI(title="Mindcare API", description="Enterprise Derivatives Risk Engine")
+
+# --- X402 PAYMENT CONFIGURATION & MIDDLEWARE ---
+pay_to = "0x6dBD750fC5965f9299Bf9671b121a11ADAB89277"
+
+facilitator = HTTPFacilitatorClient(
+    FacilitatorConfig(url="https://api.cdp.coinbase.com/platform/v2/x402/facilitator")
+)
+
+server = x402ResourceServer(facilitator)
+server.register("eip155:8453", ExactEvmServerScheme())
+
+# Define protected routes with Agentic Bazaar discovery metadata
+routes: dict[str, RouteConfig] = {
+    "GET /analyze": RouteConfig(
+        accepts=[
+            PaymentOption(
+                scheme="exact",
+                pay_to=pay_to,
+                price="$0.02",
+                network="eip155:8453",
+            ),
+        ],
+        mime_type="application/json",
+        description="Mindcare KCI Risk Node",
+        extensions={
+            "bazaar": {
+                "info": {
+                    "output": {
+                        "type": "json",
+                        "example": {
+                            "service": "Mindcare_Derivatives_Engine",
+                            "target_pair": "BTCUSDT",
+                            "status": "Success",
+                            "kci_compliance": {
+                                "KCI_01_Funding_Rate_Risk": "PASS",
+                                "KCI_02_Volatility_Stress": "PASS",
+                                "KCI_03_Volume_Authenticity": "PASS"
+                            },
+                            "execution_verdict": "APPROVED",
+                            "actionable_advice": "All Key Control Indicators passed. Clear for automated execution."
+                        },
+                    },
+                },
+            },
+        },
+    ),
+}
+
+# Attach the official toll booth to the app
+app.add_middleware(PaymentMiddlewareASGI, routes=routes, server=server)
+
+
+# --- ROOT METADATA (Optional but good for fallback discovery) ---
 @app.get("/")
 def get_marketplace_metadata():
     """
-    Agentic.market Bazaar Indexing Metadata.
-    The network reads this to build your storefront.
+    General Indexing Metadata.
     """
     return {
         "agent_name": "Mindcare KCI Risk Node",
@@ -24,32 +83,7 @@ def get_marketplace_metadata():
             "primary_execution": "/analyze?pair={symbol}"
         }
     }
-# --- X402 PAYMENT CONFIGURATION ---
-MERCHANT_WALLET = "0x6dBD750fC5965f9299Bf9671b121a11ADAB89277" 
 
-# --- THE X402 PROTOCOL MIDDLEWARE ---
-@app.middleware("http")
-async def x402_payment_gate(request: Request, call_next):
-    if request.url.path == "/analyze":
-        payment_receipt = request.headers.get("x-402-receipt")
-        
-        if not payment_receipt:
-            return JSONResponse(
-                status_code=402, 
-                content={
-                    "error": "Payment Required",
-                    "message": "Enterprise KCI validation requires payment.",
-                    "invoice": {
-                        "amount": "0.02",  # Premium pricing for futures data
-                        "currency": "USDC",
-                        "network": "eip155:8453", 
-                        "recipient": MERCHANT_WALLET
-                    }
-                },
-                headers={"X-402-Payment-Required": "true"}
-            )
-            
-    return await call_next(request)
 
 # --- ENTERPRISE KCI LOGIC (BINANCE FUTURES) ---
 def evaluate_market_kcis(symbol: str):
@@ -76,7 +110,6 @@ def evaluate_market_kcis(symbol: str):
         failed_kcis = []
 
         # KCI 01: Leverage Risk (Threshold: 0.05%)
-        # If funding rate is too high, the market is dangerously over-leveraged.
         if abs(funding_rate) > 0.0005:
             compliance["KCI_01_Funding_Rate_Risk"] = "FAIL"
             failed_kcis.append("Funding Rate exceeds leverage safety limits.")
@@ -110,10 +143,13 @@ def evaluate_market_kcis(symbol: str):
     except Exception as e:
         return None, "ERROR", f"API or Calculation Failure: {str(e)}"
 
+
+# --- PROTECTED ENDPOINT ---
 @app.get("/analyze")
 async def analyze_data(pair: str = "BTCUSDT"):
     """
     Delivers strict KCI compliance output to trading daemons.
+    This endpoint is automatically protected by the x402 middleware.
     """
     compliance, verdict, advice = evaluate_market_kcis(pair)
     
@@ -128,10 +164,14 @@ async def analyze_data(pair: str = "BTCUSDT"):
         "execution_verdict": verdict,
         "actionable_advice": advice
     }
+
+
+# --- UNPROTECTED OCEAN PROXY ENDPOINT ---
 @app.get("/ocean-analyze")
 def ocean_gateway_endpoint(pair: str = "BTCUSDT"):
     """
     Dedicated endpoint for the Ocean Protocol decentralized proxy.
+    Bypasses x402 because Ocean handles its own payment gateway.
     """
     return {
         "service": "Mindcare_Ocean_Gateway",
@@ -143,5 +183,8 @@ def ocean_gateway_endpoint(pair: str = "BTCUSDT"):
         },
         "execution_verdict": "APPROVED"
     }
+
+
 if __name__ == "__main__":
+    # Retained your port 8000 configuration for compatibility with your Caddy/Domain setup
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
